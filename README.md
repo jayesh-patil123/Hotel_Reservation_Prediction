@@ -165,25 +165,79 @@ gcloud run deploy hotel-reservation-predictor \
 ```groovy
 pipeline {
     agent any
+
+    environment {
+        VENV_DIR = 'venv'
+        GCP_PROJECT = "peppy-glyph-454715-c4"
+        GCLOUD_PATH = "/var/jenkins_home/google-cloud-sdk/bin"
+    }
+
     stages {
-        stage('Checkout') {
+        stage('Cloning Github repo to Jenkins') {
             steps {
-                git 'https://github.com/your-repo/hotel-reservation.git'
+                script {
+                    echo 'Cloning Github repo to Jenkins..........'
+                    checkout scmGit(branches: [[name: '*/main']], extensions: [], userRemoteConfigs: [[credentialsId: 'github-token', url: 'https://github.com/jayesh-patil123/Hotel_Reservation_Prediction.git']])
+                }
             }
         }
-        stage('Build Docker Image') {
+
+        stage('Setting up our Virtual Environment and Installing dependencies') {
             steps {
-                sh 'docker build -t hotel-reservation-predictor .'
+                script {
+                    echo 'Setting up our Virtual Environment and Installing dependencies..........'
+                    sh '''
+                    # Use bash explicitly
+                    /bin/bash -c "
+                    python3 -m venv ${VENV_DIR}
+                    source ${VENV_DIR}/bin/activate
+                    pip install --upgrade pip
+                    pip install -e .
+                    "
+                    '''
+                }
             }
         }
-        stage('Push to GCR') {
+
+        stage('Building and Pushing Docker Image to GCR') {
             steps {
-                sh 'docker push gcr.io/$PROJECT_ID/hotel-reservation-predictor'
+                withCredentials([file(credentialsId: 'gcp-key', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
+                    script {
+                        echo 'Building and Pushing Docker Image to GCR............'
+                        sh '''
+                        /bin/bash -c "
+                        export PATH=$PATH:${GCLOUD_PATH}
+                        gcloud auth activate-service-account --key-file=${GOOGLE_APPLICATION_CREDENTIALS}
+                        gcloud config set project ${GCP_PROJECT}
+                        gcloud auth configure-docker --quiet
+                        docker build --no-cache -t gcr.io/${GCP_PROJECT}/ml-project:latest .
+                        docker push gcr.io/${GCP_PROJECT}/ml-project:latest
+                        "
+                        '''
+                    }
+                }
             }
         }
-        stage('Deploy to Cloud Run') {
+
+        stage('Deploy to Google Cloud Run') {
             steps {
-                sh 'gcloud run deploy hotel-reservation-predictor --image gcr.io/$PROJECT_ID/hotel-reservation-predictor --platform managed --region us-central1 --allow-unauthenticated'
+                withCredentials([file(credentialsId: 'gcp-key', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
+                    script {
+                        echo 'Deploy to Google Cloud Run............'
+                        sh '''
+                        /bin/bash -c "
+                        export PATH=$PATH:${GCLOUD_PATH}
+                        gcloud auth activate-service-account --key-file=${GOOGLE_APPLICATION_CREDENTIALS}
+                        gcloud config set project ${GCP_PROJECT}
+                        gcloud run deploy ml-project \
+                            --image=gcr.io/${GCP_PROJECT}/ml-project:latest \
+                            --platform=managed \
+                            --region=us-central1 \
+                            --allow-unauthenticated
+                        "
+                        '''
+                    }
+                }
             }
         }
     }
